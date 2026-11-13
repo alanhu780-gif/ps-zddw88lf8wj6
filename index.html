@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#000">
+<title>Pop Scan</title>
+<style>
+:root{--acc:#ffb020;--ok:#3ecf8e;--mut:#a8b0bd;--card:rgba(20,22,28,.94)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:#000;color:#fff;font:15px/1.35 system-ui,-apple-system,Roboto,sans-serif;overflow:hidden}
+#v{position:fixed;inset:0;width:100%;height:100%;object-fit:cover}
+#ret{position:fixed;left:50%;top:42%;transform:translate(-50%,-50%);border:3px solid rgba(255,255,255,.85);border-radius:22px;box-shadow:0 0 0 9999px rgba(0,0,0,.28);pointer-events:none;transition:border-color .2s}
+#ret.hit{border-color:var(--ok)}#ret.maybe{border-color:var(--acc)}
+#top{position:fixed;left:0;right:0;top:0;padding:calc(env(safe-area-inset-top) + 10px) 12px 8px;display:flex;gap:8px;align-items:center;background:linear-gradient(#000a,#0000)}
+#st{flex:1;font-size:13px;color:#ddd;text-shadow:0 1px 2px #000}
+.ib{background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:999px;padding:8px 12px;font:inherit;font-size:14px}
+#card{position:fixed;left:10px;right:10px;bottom:calc(env(safe-area-inset-bottom) + 10px);background:var(--card);border-radius:20px;padding:12px;display:none;backdrop-filter:blur(8px)}
+#card.on{display:block;animation:up .18s ease-out}
+@keyframes up{from{transform:translateY(20px);opacity:0}}
+.main{display:flex;gap:12px;align-items:center}
+.th{width:110px;height:110px;flex:none;background:#fff;border-radius:12px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.th img{max-width:100%;max-height:100%}
+.th .no{color:#777;font-size:11px;text-align:center;padding:6px}
+.info{flex:1;min-width:0}
+.tag{display:inline-block;font-size:11px;font-weight:800;letter-spacing:.04em;padding:2px 8px;border-radius:999px;margin-bottom:4px}
+.t-exact{background:rgba(62,207,142,.2);color:var(--ok)}.t-look{background:rgba(255,176,32,.2);color:var(--acc)}.t-pick{background:rgba(255,255,255,.15);color:#fff}
+.nm{font-weight:700;font-size:17px;line-height:1.2;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.mt{color:var(--mut);font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pr{margin-top:4px}.cad{font-size:30px;font-weight:800;color:var(--acc)}.usd{color:var(--mut);font-size:12px;margin-left:6px}
+.alts{display:flex;gap:8px;margin-top:10px;overflow-x:auto}
+.alt{flex:none;width:76px;background:#0d0f13;border:1px solid #2a2f3a;border-radius:10px;padding:4px;color:#fff;font:inherit;text-align:center}
+.alt .s{width:66px;height:66px;background:#fff;border-radius:7px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin:0 auto}
+.alt .s img{max-width:100%;max-height:100%}
+.alt b{display:block;font-size:11px;color:var(--acc);margin-top:3px}
+.alt.cur{border-color:var(--acc)}
+.row{display:flex;gap:8px;margin-top:10px}
+.row a,.row button{flex:1;text-align:center;font-size:13px;padding:9px;border-radius:10px;background:#252a33;color:#fff;border:0;text-decoration:none;font-family:inherit}
+#gate,#panel{position:fixed;inset:0;background:#0f1115;display:none;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center;gap:14px}
+#gate.on,#panel.on{display:flex}
+.big{background:var(--acc);color:#1a1200;font-weight:800;font-size:18px;border:0;border-radius:14px;padding:16px 26px;font-family:inherit}
+#panel{justify-content:flex-start;text-align:left;align-items:stretch;overflow:auto;padding-top:calc(env(safe-area-inset-top) + 18px)}
+#panel input{width:100%;font:inherit;padding:12px;border-radius:10px;border:1px solid #2a2f3a;background:#181b22;color:#fff}
+.res{display:flex;flex-direction:column;gap:6px}
+.res button{display:flex;gap:10px;align-items:center;background:#181b22;border:1px solid #2a2f3a;border-radius:10px;padding:6px;color:#fff;font:inherit;text-align:left}
+.res .s{width:48px;height:48px;flex:none;background:#fff;border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden}.res .s img{max-width:100%;max-height:100%}
+.res .x{flex:1;min-width:0;font-size:13px}.res .x span{color:var(--mut);font-size:11px;display:block}
+.res .p{color:var(--acc);font-weight:700}
+small{color:var(--mut)}
+</style>
+</head>
+<body>
+<video id="v" playsinline muted autoplay></video>
+<div id="ret"></div>
+<div id="top"><div id="st">Starting…</div><button class="ib" id="pauseB">⏸</button><button class="ib" id="findB">🔍</button><button class="ib" id="setB">⚙️</button></div>
+
+<div id="card">
+  <div class="main">
+    <div class="th" id="cTh"></div>
+    <div class="info">
+      <span class="tag" id="cTag"></span>
+      <div class="nm" id="cNm"></div>
+      <div class="mt" id="cMt"></div>
+      <div class="pr"><span class="cad" id="cCad"></span><span class="usd" id="cUsd"></span></div>
+    </div>
+  </div>
+  <div class="alts" id="cAlts"></div>
+  <div class="row"><a id="cLink" target="_blank" rel="noopener">HobbyDB ↗</a><button id="cClose">Close</button></div>
+</div>
+
+<div id="gate"><div style="font-size:42px">📷</div><div id="gateMsg">Tap to start the camera</div><button class="big" id="startB">Start scanning</button><small id="gateSub"></small></div>
+
+<div id="panel">
+  <div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:18px" id="pTitle">Search</b><button class="ib" id="pClose">✕</button></div>
+  <div id="pSearch"><input id="q" type="search" placeholder="Name, box #, UPC, exclusive…" autocomplete="off"><div class="res" id="qRes" style="margin-top:10px"></div></div>
+  <div id="pSet" style="display:none">
+    <div style="margin-top:6px"><b>USD → CAD rate</b></div>
+    <div style="display:flex;gap:8px;margin-top:8px"><input id="fxIn" type="number" step="0.0001" inputmode="decimal"><button class="ib" id="fxSave">Save</button><button class="ib" id="fxReset">Reset</button></div>
+    <small id="fxNote" style="display:block;margin-top:6px"></small>
+    <div style="margin-top:16px"><b>Look-alike sensitivity</b></div>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center"><input id="thIn" type="range" min="0.30" max="0.80" step="0.01" style="flex:1"><span id="thV"></span></div>
+    <small style="display:block;margin-top:6px">Lower shows guesses sooner; higher waits for a closer visual match. Barcode matches are always exact.</small>
+    <small style="display:block;margin-top:16px">Values: your HobbyDB export (Aug 12, 2026), USD, converted at the rate above. Estimates, not sold comps.</small>
+    <small id="dbg" style="display:block;margin-top:16px;opacity:.6"></small>
+  </div>
+</div>
+
+<script type="module">
+const FX_DEFAULT = 1.4181, FX_SOURCE = 'Bank of Canada, Nov 10, 2026', SHARDS = 24;
+const EMB_MODE = 'cls';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ls = { get(k){ try { return localStorage.getItem(k) } catch(e){ return null } }, set(k,v){ try { localStorage.setItem(k,v) } catch(e){} }, del(k){ try { localStorage.removeItem(k) } catch(e){} } };
+let fx = parseFloat(ls.get('fx')) || FX_DEFAULT;
+let TH = parseFloat(ls.get('th')) || 0.70;
+const money = (v, c) => v == null ? '—' : (c === 'CAD' ? 'C$' : 'US$') + Math.round(v).toLocaleString('en-CA');
+const st = t => $('st').textContent = t;
+
+// ---------- decrypt ----------
+const b64u = s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')), c => c.charCodeAt(0));
+let KEY = null;
+async function getKey(){
+  let k = (location.hash.match(/k=([A-Za-z0-9_-]+)/) || [])[1];
+  if (k) { ls.set('k', k); history.replaceState(null, '', location.pathname); } else k = ls.get('k');
+  if (!k) throw new Error('nokey');
+  return crypto.subtle.importKey('raw', b64u(k), 'AES-GCM', false, ['decrypt']);
+}
+async function dec(path){
+  const buf = new Uint8Array(await (await fetch(path)).arrayBuffer());
+  const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv: buf.slice(0,12)}, KEY, buf.slice(12));
+  return new TextDecoder().decode(pt);
+}
+
+// ---------- data ----------
+let ITEMS = [], BY_ID = {}, BY_UPC = {};
+const norm = s => String(s ?? '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9#]+/g,' ').trim();
+async function loadItems(){
+  ITEMS = JSON.parse(await dec('d/items.bin')).map(r => {
+    const o = {id:r[0], name:r[1], orig:r[2], ex:r[3], upc:r[4], year:r[5], scale:r[6], ref:r[7], v:r[8], line:r[9], slug:r[10]};
+    o.refN = o.ref ? String(o.ref).replace(/^#/,'').replace(/^0+(?=\d)/,'').toLowerCase() : null;
+    o.hay = norm([o.name, o.orig, o.ex, o.line, o.ref ? '#'+o.ref : '', o.upc, (o.slug||'').replace(/-/g,' ')].join(' '));
+    BY_ID[o.id] = o;
+    if (o.upc) { const u = o.upc.replace(/^0+/,''); (BY_UPC[u] = BY_UPC[u] || []).push(o); }
+    return o;
+  });
+}
+const shardP = {};
+async function thumb(id){
+  const k = String(parseInt(id,10) % SHARDS).padStart(2,'0');
+  if (!shardP[k]) shardP[k] = dec('d/t' + k + '.bin').then(JSON.parse).catch(() => ({}));
+  return (await shardP[k])[id] || null;
+}
+async function fillImg(el, id){ const s = await thumb(id); el.innerHTML = s ? '<img src="' + s + '">' : '<div class="no">No HobbyDB photo</div>'; }
+
+// embeddings: int8 normalized, row-major
+let E_IDS = [], E = null, D = 0;
+async function loadEmb(){
+  const j = JSON.parse(await dec('d/emb.bin'));
+  E_IDS = j.ids; D = j.dim; E = new Int8Array(b64u(j.q).buffer);
+}
+
+// ---------- camera ----------
+const video = $('v');
+async function startCam(){
+  const s = await navigator.mediaDevices.getUserMedia({audio:false, video:{facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080}}});
+  video.srcObject = s; await video.play();
+  const tr = s.getVideoTracks()[0];
+  try { const c = tr.getCapabilities ? tr.getCapabilities() : {}; if (c.focusMode && c.focusMode.includes('continuous')) await tr.applyConstraints({advanced:[{focusMode:'continuous'}]}); } catch(e){}
+  layoutRet();
+}
+function layoutRet(){ const s = Math.min(innerWidth, innerHeight) * 0.78; Object.assign($('ret').style, {width: s+'px', height: s+'px'}); }
+addEventListener('resize', layoutRet);
+// map reticle (screen) to video pixels (object-fit: cover)
+function retRect(){
+  const vw = video.videoWidth, vh = video.videoHeight, W = innerWidth, H = innerHeight;
+  const sc = Math.max(W / vw, H / vh), ox = (W - vw*sc)/2, oy = (H - vh*sc)/2;
+  const r = $('ret').getBoundingClientRect();
+  return {x:(r.left-ox)/sc, y:(r.top-oy)/sc, w:r.width/sc, h:r.height/sc};
+}
+
+// ---------- barcode ----------
+let bd = null, zx = null;
+async function initBarcode(){
+  if ('BarcodeDetector' in window) {
+    try { const f = await BarcodeDetector.getSupportedFormats(); bd = new BarcodeDetector({formats:['upc_a','ean_13','upc_e','ean_8'].filter(x => f.includes(x))}); return 'native'; } catch(e){}
+  }
+  try {
+    await new Promise((ok,no) => { const s = document.createElement('script'); s.src = 'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js'; s.onload = ok; s.onerror = no; document.head.appendChild(s); });
+    const h = new Map(); h.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.UPC_E]);
+    zx = new ZXing.MultiFormatReader(); zx.setHints(h); return 'zxing';
+  } catch(e){ return null; }
+}
+const bc = document.createElement('canvas'), bcx = bc.getContext('2d', {willReadFrequently:true});
+async function scanBarcode(){
+  if (bd) { const r = await bd.detect(video); return r.length ? r[0].rawValue : null; }
+  if (zx) {
+    const w = 960, h = Math.round(video.videoHeight * w / video.videoWidth); bc.width = w; bc.height = h; bcx.drawImage(video, 0, 0, w, h);
+    try { const lum = new ZXing.HTMLCanvasElementLuminanceSource(bc); const r = zx.decode(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum))); return r.getText(); } catch(e){ return null; }
+  }
+  return null;
+}
+
+// ---------- visual ----------
+let fe = null, RawImage = null, visBusy = false;
+async function initVisual(){
+  const m = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1');
+  RawImage = m.RawImage;
+  const prog = p => { if (p.status === 'progress' && p.total) st('Loading look-alike model… ' + Math.round(p.loaded / p.total * 100) + '%'); };
+  if (navigator.gpu) { try { fe = await m.pipeline('image-feature-extraction', 'Xenova/dinov2-small', {device:'webgpu', dtype:'fp32', progress_callback:prog}); return 'gpu'; } catch(e){} }
+  fe = await m.pipeline('image-feature-extraction', 'Xenova/dinov2-small', {device:'wasm', dtype:'q8', progress_callback:prog});
+  return 'cpu';
+}
+const vc = document.createElement('canvas'); vc.width = vc.height = 336; const vcx = vc.getContext('2d', {willReadFrequently:true});
+async function embedFrame(){
+  const r = retRect(); vcx.drawImage(video, r.x, r.y, r.w, r.h, 0, 0, 336, 336);
+  const img = RawImage.fromCanvas(vc);
+  const o = await fe(img); const a = o.data, N = o.dims[1];
+  const q = new Float32Array(D);
+  if (EMB_MODE === 'cls') for (let j = 0; j < 384; j++) q[j] = a[j];
+  else if (EMB_MODE === 'mean') { for (let p = 1; p < N; p++) for (let j = 0; j < 384; j++) q[j] += a[p*384+j]; }
+  else { const c = new Float32Array(384), mn = new Float32Array(384); for (let j = 0; j < 384; j++) c[j] = a[j]; for (let p = 1; p < N; p++) for (let j = 0; j < 384; j++) mn[j] += a[p*384+j]; const nc = Math.hypot(...c), nm = Math.hypot(...mn); for (let j = 0; j < 384; j++) { q[j] = c[j]/nc; q[384+j] = mn[j]/nm; } }
+  let n = 0; for (let j = 0; j < D; j++) n += q[j]*q[j]; n = Math.sqrt(n); for (let j = 0; j < D; j++) q[j] /= n;
+  return q;
+}
+function topK(q, k){
+  const out = []; const M = E_IDS.length;
+  for (let i = 0; i < M; i++) { let s = 0, o = i*D; for (let j = 0; j < D; j++) s += q[j]*E[o+j]; s /= 127; if (out.length < k || s > out[out.length-1][0]) { out.push([s, E_IDS[i]]); out.sort((a,b) => b[0]-a[0]); if (out.length > k) out.pop(); } }
+  return out;
+}
+
+// ---------- card ----------
+let shown = null, shownKind = null, pinned = false, paused = false, lastBarcodeAt = 0;
+function show(it, kind, alts){
+  if (!it) return;
+  const sameItem = shown && shown.id === it.id && shownKind === kind;
+  shown = it; shownKind = kind;
+  $('card').classList.add('on');
+  if (!sameItem) {
+    $('cTag').className = 'tag ' + (kind === 'exact' ? 't-exact' : kind === 'pick' ? 't-pick' : 't-look');
+    $('cTag').textContent = kind === 'exact' ? 'EXACT · BARCODE' : kind === 'pick' ? 'YOUR PICK' : 'LOOKS LIKE · CONFIRM PHOTO';
+    $('cNm').textContent = it.name;
+    $('cMt').textContent = [it.ref ? '#' + it.ref : null, it.ex, it.year, it.scale].filter(Boolean).join(' · ');
+    $('cCad').textContent = money(it.v == null ? null : it.v * fx, 'CAD');
+    $('cUsd').textContent = it.v == null ? 'no value' : money(it.v, 'USD');
+    $('cLink').href = 'https://www.hobbydb.com/marketplaces/hobbydb/collectibles/' + it.id;
+    fillImg($('cTh'), it.id);
+  }
+  const box = $('cAlts');
+  if (alts && alts.length > 1) {
+    const key = alts.map(a => a.id).join(',');
+    if (box.dataset.k !== key) {
+      box.dataset.k = key; box.innerHTML = '';
+      alts.forEach(a => { const b = document.createElement('button'); b.className = 'alt'; b.dataset.id = a.id; b.innerHTML = '<div class="s"></div><b>' + money(a.v == null ? null : a.v*fx, 'CAD') + '</b>'; fillImg(b.querySelector('.s'), a.id); b.onclick = () => { pinned = true; show(a, 'pick', alts); setPause(true); }; box.appendChild(b); });
+    }
+    [...box.children].forEach(c => c.classList.toggle('cur', c.dataset.id === it.id));
+    box.style.display = '';
+  } else if (kind !== 'pick') { box.style.display = 'none'; box.dataset.k = ''; }
+  $('ret').className = kind === 'exact' ? 'hit' : 'maybe';
+}
+function hide(){ $('card').classList.remove('on'); shown = null; shownKind = null; pinned = false; $('ret').className = ''; }
+$('cClose').onclick = () => { hide(); setPause(false); };
+function setPause(p){ paused = p; $('pauseB').textContent = p ? '▶' : '⏸'; if (p) video.pause(); else video.play(); }
+$('pauseB').onclick = () => { setPause(!paused); if (!paused) { pinned = false; } };
+
+// ---------- loops ----------
+let streak = {id:null, n:0};
+async function barcodeLoop(){
+  while (true) {
+    if (!paused && video.readyState >= 2) {
+      try {
+        const code = await scanBarcode();
+        if (code) {
+          const hits = BY_UPC[code.replace(/^0+/,'')];
+          if (hits && hits.length) { lastBarcodeAt = Date.now(); if (!pinned) show(hits[0], 'exact', hits.length > 1 ? hits : null); if (navigator.vibrate && (!shown || shown.id !== hits[0].id)) navigator.vibrate(40); }
+          else if (Date.now() - lastBarcodeAt > 1500) st('Barcode ' + code + ' isn’t in your HobbyDB export');
+        }
+      } catch(e){}
+    }
+    await new Promise(r => setTimeout(r, 120));
+  }
+}
+let visMs = 0;
+async function visualLoop(){
+  while (true) {
+    if (fe && E && !paused && !pinned && video.readyState >= 2 && Date.now() - lastBarcodeAt > 2500) {
+      try {
+        const t0 = performance.now();
+        const q = await embedFrame(); const top = topK(q, 5);
+        visMs = Math.round(performance.now() - t0);
+        $('dbg').textContent = 'last frame ' + visMs + ' ms · top ' + top.slice(0,3).map(t => t[0].toFixed(2)).join(' / ');
+        const best = top[0];
+        if (best && best[0] >= TH) {
+          streak = streak.id === best[1] ? {id: best[1], n: streak.n + 1} : {id: best[1], n: 1};
+          if (streak.n >= 2 || best[0] >= TH + 0.12) show(BY_ID[best[1]], 'look', top.filter(t => t[0] >= TH - 0.08).map(t => BY_ID[t[1]]));
+        } else { streak = {id:null, n:0}; if (shownKind === 'look' && best && best[0] < TH - 0.1) hide(); }
+      } catch(e){ $('dbg').textContent = 'visual error: ' + e.message; }
+    }
+    await new Promise(r => setTimeout(r, 60));
+  }
+}
+
+// ---------- panel ----------
+function openPanel(which){ $('panel').classList.add('on'); $('pSearch').style.display = which === 's' ? '' : 'none'; $('pSet').style.display = which === 'set' ? '' : 'none'; $('pTitle').textContent = which === 's' ? 'Search' : 'Settings'; if (which === 's') setTimeout(() => $('q').focus(), 50); }
+$('findB').onclick = () => openPanel('s'); $('setB').onclick = () => openPanel('set'); $('pClose').onclick = () => $('panel').classList.remove('on');
+function fxUI(){ $('fxIn').value = fx; $('fxNote').textContent = (fx === FX_DEFAULT ? 'Default: ' : 'Custom. Default ' + FX_DEFAULT + ', ') + FX_SOURCE; $('thIn').value = TH; $('thV').textContent = TH.toFixed(2); }
+$('fxSave').onclick = () => { const v = parseFloat($('fxIn').value); if (v > 0.5 && v < 3) { fx = v; ls.set('fx', v); fxUI(); if (shown) { const s = shown, k = shownKind; shown = null; show(s, k); } } };
+$('fxReset').onclick = () => { fx = FX_DEFAULT; ls.del('fx'); fxUI(); };
+$('thIn').oninput = () => { TH = parseFloat($('thIn').value); ls.set('th', TH); fxUI(); };
+let qT;
+$('q').oninput = () => { clearTimeout(qT); qT = setTimeout(() => {
+  const q = $('q').value, box = $('qRes'); box.innerHTML = ''; const t = norm(q).split(' ').filter(Boolean); if (!t.length) return;
+  const digits = q.replace(/\D/g,'');
+  let r = digits.length >= 11 ? (BY_UPC[digits.replace(/^0+/,'')] || []) : [];
+  if (!r.length) r = ITEMS.map(it => { let s = 0, all = true; t.forEach(w => { if ((' '+it.hay+' ').includes(' '+w+' ')) s += 2; else if (it.hay.includes(w)) s += 1; else all = false; }); if (all) s += 4; return [s, it]; }).filter(x => x[0] > 0).sort((a,b) => b[0]-a[0] || (b[1].v||0)-(a[1].v||0)).slice(0,30).map(x => x[1]);
+  r.forEach(it => { const b = document.createElement('button'); b.innerHTML = '<div class="s"></div><div class="x">' + esc(it.name) + '<span>' + esc([it.ref ? '#'+it.ref : null, it.ex, it.year].filter(Boolean).join(' · ')) + '</span></div><div class="p">' + money(it.v == null ? null : it.v*fx, 'CAD') + '</div>'; fillImg(b.querySelector('.s'), it.id); b.onclick = () => { $('panel').classList.remove('on'); pinned = true; setPause(true); show(it, 'pick'); }; box.appendChild(b); });
+  if (!r.length) box.innerHTML = '<small>No matches.</small>';
+}, 150); };
+
+// ---------- boot ----------
+async function boot(){
+  try { KEY = await getKey(); } catch(e) { $('gate').classList.add('on'); $('gateMsg').textContent = 'This link is missing its access key. Open the full link you were given.'; $('startB').style.display = 'none'; return; }
+  try { await loadItems(); } catch(e) { $('gate').classList.add('on'); $('gateMsg').textContent = 'Could not unlock the collection data. Open the full link again.'; $('startB').style.display = 'none'; ls.del('k'); return; }
+  fxUI();
+  $('gate').classList.add('on'); $('gateSub').textContent = ITEMS.length.toLocaleString() + ' items loaded';
+  $('startB').onclick = async () => {
+    try { await startCam(); } catch(e) { $('gateMsg').textContent = 'Camera blocked: ' + e.message + '. Allow camera access for this site in Chrome settings.'; return; }
+    $('gate').classList.remove('on');
+    st('Starting barcode reader…');
+    const b = await initBarcode();
+    barcodeLoop();
+    st((b ? 'Barcode ready' : 'Barcode unavailable') + ' · loading look-alike model…');
+    try { await loadEmb(); const dev = await initVisual(); st('Point at a box · barcode = exact, otherwise look-alike (' + dev + ')'); visualLoop(); }
+    catch(e) { st((b ? 'Barcode ready' : 'Barcode unavailable') + ' · look-alike failed: ' + e.message); }
+  };
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) video.pause(); else if (!paused) video.play(); });
+boot();
+</script>
+</body>
+</html>
