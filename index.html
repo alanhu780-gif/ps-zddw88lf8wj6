@@ -25,6 +25,7 @@ html,body{margin:0;height:100%;background:#000;color:#fff;font:15px/1.35 system-
 .th .no{color:#777;font-size:11px;text-align:center;padding:6px}
 .info{flex:1;min-width:0}
 .tag{display:inline-block;font-size:11px;font-weight:800;letter-spacing:.04em;padding:2px 8px;border-radius:999px;margin-bottom:4px}
+.t-unsure{background:rgba(255,92,108,.2);color:#ff7a88}.rd{font-size:11px;color:#8fd3ff;margin-top:2px}.alt i{display:block;font-style:normal;font-size:10px;color:#a8b0bd}
 .t-exact{background:rgba(62,207,142,.2);color:var(--ok)}.t-look{background:rgba(255,176,32,.2);color:var(--acc)}.t-pick{background:rgba(255,255,255,.15);color:#fff}
 .nm{font-weight:700;font-size:17px;line-height:1.2;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .mt{color:var(--mut);font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -63,6 +64,7 @@ small{color:var(--mut)}
       <div class="nm" id="cNm"></div>
       <div class="mt" id="cMt"></div>
       <div class="pr"><span class="cad" id="cCad"></span><span class="usd" id="cUsd"></span></div>
+      <div class="rd" id="cRead"></div>
     </div>
   </div>
   <div class="alts" id="cAlts"></div>
@@ -79,8 +81,8 @@ small{color:var(--mut)}
     <div style="display:flex;gap:8px;margin-top:8px"><input id="fxIn" type="number" step="0.0001" inputmode="decimal"><button class="ib" id="fxSave">Save</button><button class="ib" id="fxReset">Reset</button></div>
     <small id="fxNote" style="display:block;margin-top:6px"></small>
     <div style="margin-top:16px"><b>Look-alike sensitivity</b></div>
-    <div style="display:flex;gap:8px;margin-top:8px;align-items:center"><input id="thIn" type="range" min="0.30" max="0.80" step="0.01" style="flex:1"><span id="thV"></span></div>
-    <small style="display:block;margin-top:6px">Lower shows guesses sooner; higher waits for a closer visual match. Barcode matches are always exact.</small>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center"><input id="thIn" type="range" min="0.70" max="0.92" step="0.01" style="flex:1"><span id="thV"></span></div>
+    <small style="display:block;margin-top:6px">Lower shows guesses sooner; higher waits for a closer match. Barcode matches are always exact.</small>
     <small style="display:block;margin-top:16px">Values: your HobbyDB export (Aug 12, 2026), USD, converted at the rate above. Estimates, not sold comps.</small>
     <small id="dbg" style="display:block;margin-top:16px;opacity:.6"></small>
   </div>
@@ -88,12 +90,11 @@ small{color:var(--mut)}
 
 <script type="module">
 const FX_DEFAULT = 1.4181, FX_SOURCE = 'Bank of Canada, Nov 10, 2026', SHARDS = 24;
-const EMB_MODE = 'cls';
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const ls = { get(k){ try { return localStorage.getItem(k) } catch(e){ return null } }, set(k,v){ try { localStorage.setItem(k,v) } catch(e){} }, del(k){ try { localStorage.removeItem(k) } catch(e){} } };
 let fx = parseFloat(ls.get('fx')) || FX_DEFAULT;
-let TH = parseFloat(ls.get('th')) || 0.70;
+let TH = parseFloat(ls.get('th2')) || 0.80;
 const money = (v, c) => v == null ? '—' : (c === 'CAD' ? 'C$' : 'US$') + Math.round(v).toLocaleString('en-CA');
 const st = t => $('st').textContent = t;
 
@@ -133,13 +134,15 @@ async function thumb(id){
 }
 async function fillImg(el, id){ const s = await thumb(id); el.innerHTML = s ? '<img src="' + s + '">' : '<div class="no">No HobbyDB photo</div>'; }
 
-// embeddings: int8 normalized, row-major
-let E_IDS = [], E = null, D = 0;
+// embeddings: int8 normalized CLIP vectors; several reference photos/crops per item
+let E_IDS = [], E = null, D = 0, NREF = 0, RI = null;
 async function loadEmb(){
-  const j = JSON.parse(await dec('d/emb.bin'));
-  E_IDS = j.ids; D = j.dim; E = new Int8Array(b64u(j.q).buffer);
+  const j = JSON.parse(await dec('d/clip.bin'));
+  E_IDS = j.ids.filter(id => BY_ID[id]); D = j.dim; NREF = j.nref;
+  const keep = new Map(j.ids.map((id,i) => [i, E_IDS.indexOf(id)]));
+  const ri = new Uint16Array(b64u(j.ri).buffer); RI = new Int32Array(NREF); for (let i = 0; i < NREF; i++) RI[i] = keep.get(ri[i]);
+  E = new Int8Array(b64u(j.q).buffer);
 }
-
 // ---------- camera ----------
 const video = $('v');
 async function startCam(){
@@ -181,32 +184,73 @@ async function scanBarcode(){
   return null;
 }
 
-// ---------- visual ----------
-let fe = null, RawImage = null, visBusy = false;
+// ---------- visual (CLIP ViT-B/16, multi-reference) ----------
+let proc = null, vmodel = null, RawImage = null, DEV = '';
 async function initVisual(){
   const m = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1');
   RawImage = m.RawImage;
-  const prog = p => { if (p.status === 'progress' && p.total) st('Loading look-alike model… ' + Math.round(p.loaded / p.total * 100) + '%'); };
-  if (navigator.gpu) { try { fe = await m.pipeline('image-feature-extraction', 'Xenova/dinov2-small', {device:'webgpu', dtype:'fp32', progress_callback:prog}); return 'gpu'; } catch(e){} }
-  fe = await m.pipeline('image-feature-extraction', 'Xenova/dinov2-small', {device:'wasm', dtype:'q8', progress_callback:prog});
-  return 'cpu';
+  const prog = p => { if (p.status === 'progress' && p.total && p.total > 5e6) st('Downloading recognition model (one time)… ' + Math.round(p.loaded / p.total * 100) + '%'); };
+  proc = await m.AutoProcessor.from_pretrained('Xenova/clip-vit-base-patch16');
+  if (navigator.gpu) {
+    try { vmodel = await m.CLIPVisionModelWithProjection.from_pretrained('Xenova/clip-vit-base-patch16', {device:'webgpu', dtype:'fp16', progress_callback:prog}); DEV = 'GPU'; return DEV; } catch(e){}
+  }
+  vmodel = await m.CLIPVisionModelWithProjection.from_pretrained('Xenova/clip-vit-base-patch16', {device:'wasm', dtype:'q8', progress_callback:prog});
+  DEV = 'CPU'; return DEV;
 }
 const vc = document.createElement('canvas'); vc.width = vc.height = 336; const vcx = vc.getContext('2d', {willReadFrequently:true});
 async function embedFrame(){
   const r = retRect(); vcx.drawImage(video, r.x, r.y, r.w, r.h, 0, 0, 336, 336);
-  const img = RawImage.fromCanvas(vc);
-  const o = await fe(img); const a = o.data, N = o.dims[1];
-  const q = new Float32Array(D);
-  if (EMB_MODE === 'cls') for (let j = 0; j < 384; j++) q[j] = a[j];
-  else if (EMB_MODE === 'mean') { for (let p = 1; p < N; p++) for (let j = 0; j < 384; j++) q[j] += a[p*384+j]; }
-  else { const c = new Float32Array(384), mn = new Float32Array(384); for (let j = 0; j < 384; j++) c[j] = a[j]; for (let p = 1; p < N; p++) for (let j = 0; j < 384; j++) mn[j] += a[p*384+j]; const nc = Math.hypot(...c), nm = Math.hypot(...mn); for (let j = 0; j < 384; j++) { q[j] = c[j]/nc; q[384+j] = mn[j]/nm; } }
-  let n = 0; for (let j = 0; j < D; j++) n += q[j]*q[j]; n = Math.sqrt(n); for (let j = 0; j < D; j++) q[j] /= n;
+  const {image_embeds} = await vmodel(await proc(RawImage.fromCanvas(vc)));
+  const a = image_embeds.data, q = new Float32Array(D); let n = 0;
+  for (let j = 0; j < D; j++) { q[j] = Number(a[j]); n += q[j]*q[j]; }
+  n = Math.sqrt(n); for (let j = 0; j < D; j++) q[j] /= n;
   return q;
 }
-function topK(q, k){
-  const out = []; const M = E_IDS.length;
-  for (let i = 0; i < M; i++) { let s = 0, o = i*D; for (let j = 0; j < D; j++) s += q[j]*E[o+j]; s /= 127; if (out.length < k || s > out[out.length-1][0]) { out.push([s, E_IDS[i]]); out.sort((a,b) => b[0]-a[0]); if (out.length > k) out.pop(); } }
-  return out;
+// per-item visual score = best of that item's reference photos/crops
+function itemScores(q){
+  const S = new Float32Array(E_IDS.length).fill(-1);
+  for (let i = 0; i < NREF; i++) { let s = 0; const o = i*D; for (let j = 0; j < D; j++) s += q[j]*E[o+j]; s /= 127; const it = RI[i]; if (s > S[it]) S[it] = s; }
+  return S;
+}
+
+// ---------- box text (Tesseract, background) ----------
+const STOPW = new Set('the a an of and or with to in on for by pop pops funko vinyl figure figures exclusive edition limited pcs piece pieces collectible collectibles series vol box new rare chase special glow dark metallic flocked inch inches super sized deluxe not suitable children under years warning choking hazard small parts made china ages age www com'.split(' '));
+let IDF = {}, NAMETOK = [];
+function buildTextIndex(){
+  const df = {};
+  NAMETOK = E_IDS.map(id => { const it = BY_ID[id]; const t = new Set(norm([it.name, it.orig].join(' ')).split(' ').filter(w => w.length >= 3 && !STOPW.has(w) && !/^\d+$/.test(w))); t.forEach(w => df[w] = (df[w]||0) + 1); return t; });
+  const N = E_IDS.length; for (const w in df) IDF[w] = Math.log(1 + N / df[w]);
+}
+let ocrWorker = null, ocrBusy = false, OCR = {words:new Set(), nums:new Set(), at:0, raw:''};
+async function initOCR(){
+  const T = (await import('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.esm.min.js')).default;
+  ocrWorker = await T.createWorker('eng', 1, {workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js', corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1', langPath:'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int'});
+  await ocrWorker.setParameters({tessedit_pageseg_mode:'11'});
+}
+const oc = document.createElement('canvas'), ocx = oc.getContext('2d', {willReadFrequently:true});
+async function readText(){
+  const r = retRect(); const W = Math.min(1400, Math.round(r.w * 1.6)); oc.width = W; oc.height = W;
+  ocx.filter = 'grayscale(1) contrast(1.35)'; ocx.drawImage(video, r.x, r.y, r.w, r.h, 0, 0, W, W); ocx.filter = 'none';
+  const res = await ocrWorker.recognize(oc);
+  const words = new Set(), nums = new Set(), shown = [];
+  for (const w of res.data.words) {
+    if (w.confidence < 55) continue;
+    const t = norm(w.text).replace(/#/g,'');
+    for (const p of t.split(' ')) {
+      if (/^\d{1,4}$/.test(p)) { nums.add(p.replace(/^0+(?=\d)/,'')); continue; }
+      if (p.length >= 3 && !STOPW.has(p) && IDF[p]) { words.add(p); shown.push(p); }
+    }
+  }
+  OCR = {words, nums, at: Date.now(), raw: [...new Set(shown)].slice(0,4).join(' ').toUpperCase()};
+}
+// text evidence per item: share of the item's name weight that was read on the box, plus box-number match
+function textBoost(k){
+  if (!OCR.words.size && !OCR.nums.size) return 0;
+  if (Date.now() - OCR.at > 5000) return 0;
+  let tot = 0, hit = 0; for (const w of NAMETOK[k]) { tot += IDF[w]; if (OCR.words.has(w)) hit += IDF[w]; }
+  let b = tot ? 0.07 * hit / tot : 0;
+  const it = BY_ID[E_IDS[k]]; if (it.refN && OCR.nums.has(it.refN) && hit > 0) b += 0.03;
+  return b;
 }
 
 // ---------- card ----------
@@ -217,8 +261,8 @@ function show(it, kind, alts){
   shown = it; shownKind = kind;
   $('card').classList.add('on');
   if (!sameItem) {
-    $('cTag').className = 'tag ' + (kind === 'exact' ? 't-exact' : kind === 'pick' ? 't-pick' : 't-look');
-    $('cTag').textContent = kind === 'exact' ? 'EXACT · BARCODE' : kind === 'pick' ? 'YOUR PICK' : 'LOOKS LIKE · CONFIRM PHOTO';
+    $('cTag').className = 'tag ' + (kind === 'exact' ? 't-exact' : kind === 'pick' ? 't-pick' : kind === 'likely' ? 't-look' : 't-unsure');
+    $('cTag').textContent = kind === 'exact' ? 'EXACT · BARCODE' : kind === 'pick' ? 'YOUR PICK' : kind === 'likely' ? 'LIKELY MATCH · CHECK PHOTO' : 'NOT SURE · TAP THE RIGHT ONE BELOW';
     $('cNm').textContent = it.name;
     $('cMt').textContent = [it.ref ? '#' + it.ref : null, it.ex, it.year, it.scale].filter(Boolean).join(' · ');
     $('cCad').textContent = money(it.v == null ? null : it.v * fx, 'CAD');
@@ -226,12 +270,13 @@ function show(it, kind, alts){
     $('cLink').href = 'https://www.hobbydb.com/marketplaces/hobbydb/collectibles/' + it.id;
     fillImg($('cTh'), it.id);
   }
+  $('cRead').textContent = (kind === 'likely' || kind === 'unsure') && OCR.raw && Date.now() - OCR.at < 5000 ? 'Read on box: ' + OCR.raw : '';
   const box = $('cAlts');
   if (alts && alts.length > 1) {
     const key = alts.map(a => a.id).join(',');
     if (box.dataset.k !== key) {
       box.dataset.k = key; box.innerHTML = '';
-      alts.forEach(a => { const b = document.createElement('button'); b.className = 'alt'; b.dataset.id = a.id; b.innerHTML = '<div class="s"></div><b>' + money(a.v == null ? null : a.v*fx, 'CAD') + '</b>'; fillImg(b.querySelector('.s'), a.id); b.onclick = () => { pinned = true; show(a, 'pick', alts); setPause(true); }; box.appendChild(b); });
+      alts.forEach(a => { const b = document.createElement('button'); b.className = 'alt'; b.dataset.id = a.id; b.innerHTML = '<div class="s"></div><b>' + money(a.v == null ? null : a.v*fx, 'CAD') + '</b><i>' + esc(a.ref ? '#'+a.ref : '') + '</i>'; fillImg(b.querySelector('.s'), a.id); b.onclick = () => { pinned = true; show(a, 'pick', alts); setPause(true); }; box.appendChild(b); });
     }
     [...box.children].forEach(c => c.classList.toggle('cur', c.dataset.id === it.id));
     box.style.display = '';
@@ -244,7 +289,6 @@ function setPause(p){ paused = p; $('pauseB').textContent = p ? '▶' : '⏸'; i
 $('pauseB').onclick = () => { setPause(!paused); if (!paused) { pinned = false; } };
 
 // ---------- loops ----------
-let streak = {id:null, n:0};
 async function barcodeLoop(){
   while (true) {
     if (!paused && video.readyState >= 2) {
@@ -252,7 +296,7 @@ async function barcodeLoop(){
         const code = await scanBarcode();
         if (code) {
           const hits = BY_UPC[code.replace(/^0+/,'')];
-          if (hits && hits.length) { lastBarcodeAt = Date.now(); if (!pinned) show(hits[0], 'exact', hits.length > 1 ? hits : null); if (navigator.vibrate && (!shown || shown.id !== hits[0].id)) navigator.vibrate(40); }
+          if (hits && hits.length) { lastBarcodeAt = Date.now(); if (!pinned) { if (navigator.vibrate && (!shown || shown.id !== hits[0].id)) navigator.vibrate(40); show(hits[0], 'exact', hits.length > 1 ? hits : null); } }
           else if (Date.now() - lastBarcodeAt > 1500) st('Barcode ' + code + ' isn’t in your HobbyDB export');
         }
       } catch(e){}
@@ -260,23 +304,35 @@ async function barcodeLoop(){
     await new Promise(r => setTimeout(r, 120));
   }
 }
-let visMs = 0;
+let EMA = null, lastTop = null;
+function resetEMA(){ EMA = null; }
 async function visualLoop(){
   while (true) {
-    if (fe && E && !paused && !pinned && video.readyState >= 2 && Date.now() - lastBarcodeAt > 2500) {
+    if (vmodel && E && !paused && !pinned && video.readyState >= 2 && Date.now() - lastBarcodeAt > 2500) {
       try {
         const t0 = performance.now();
-        const q = await embedFrame(); const top = topK(q, 5);
-        visMs = Math.round(performance.now() - t0);
-        $('dbg').textContent = 'last frame ' + visMs + ' ms · top ' + top.slice(0,3).map(t => t[0].toFixed(2)).join(' / ');
-        const best = top[0];
-        if (best && best[0] >= TH) {
-          streak = streak.id === best[1] ? {id: best[1], n: streak.n + 1} : {id: best[1], n: 1};
-          if (streak.n >= 2 || best[0] >= TH + 0.12) show(BY_ID[best[1]], 'look', top.filter(t => t[0] >= TH - 0.08).map(t => BY_ID[t[1]]));
-        } else { streak = {id:null, n:0}; if (shownKind === 'look' && best && best[0] < TH - 0.1) hide(); }
+        const S = itemScores(await embedFrame());
+        // smooth over frames so one blurry frame doesn't flip the answer
+        if (!EMA) EMA = S; else for (let k = 0; k < S.length; k++) EMA[k] = 0.55*S[k] + 0.45*EMA[k];
+        const F = new Float32Array(EMA.length); for (let k = 0; k < F.length; k++) F[k] = EMA[k] + textBoost(k);
+        const order = Array.from(F.keys()).sort((a,b) => F[b] - F[a]).slice(0, 6);
+        const b0 = order[0], s0 = EMA[b0], margin = F[b0] - F[order[1]];
+        $('dbg').textContent = DEV + ' · ' + Math.round(performance.now() - t0) + ' ms · top ' + order.slice(0,3).map(k => F[k].toFixed(3)).join(' / ') + (OCR.raw ? ' · read: ' + OCR.raw : '');
+        if (s0 >= TH) {
+          const alts = order.filter(k => F[k] >= F[b0] - 0.06).slice(0, 5).map(k => BY_ID[E_IDS[k]]);
+          const kind = margin >= 0.03 ? 'likely' : 'unsure';
+          if (navigator.vibrate && kind === 'likely' && (!shown || shown.id !== E_IDS[b0])) navigator.vibrate(25);
+          show(BY_ID[E_IDS[b0]], kind, kind === 'likely' && alts.length < 2 ? order.slice(0,4).map(k => BY_ID[E_IDS[k]]) : alts);
+        } else if (shownKind === 'likely' || shownKind === 'unsure') { if (s0 < TH - 0.04) { hide(); resetEMA(); } }
       } catch(e){ $('dbg').textContent = 'visual error: ' + e.message; }
     }
-    await new Promise(r => setTimeout(r, 60));
+    await new Promise(r => setTimeout(r, 30));
+  }
+}
+async function ocrLoop(){
+  while (true) {
+    if (ocrWorker && !paused && !pinned && video.readyState >= 2 && Date.now() - lastBarcodeAt > 2500) { try { await readText(); } catch(e){} }
+    await new Promise(r => setTimeout(r, 700));
   }
 }
 
@@ -286,7 +342,7 @@ $('findB').onclick = () => openPanel('s'); $('setB').onclick = () => openPanel('
 function fxUI(){ $('fxIn').value = fx; $('fxNote').textContent = (fx === FX_DEFAULT ? 'Default: ' : 'Custom. Default ' + FX_DEFAULT + ', ') + FX_SOURCE; $('thIn').value = TH; $('thV').textContent = TH.toFixed(2); }
 $('fxSave').onclick = () => { const v = parseFloat($('fxIn').value); if (v > 0.5 && v < 3) { fx = v; ls.set('fx', v); fxUI(); if (shown) { const s = shown, k = shownKind; shown = null; show(s, k); } } };
 $('fxReset').onclick = () => { fx = FX_DEFAULT; ls.del('fx'); fxUI(); };
-$('thIn').oninput = () => { TH = parseFloat($('thIn').value); ls.set('th', TH); fxUI(); };
+$('thIn').oninput = () => { TH = parseFloat($('thIn').value); ls.set('th2', TH); fxUI(); };
 let qT;
 $('q').oninput = () => { clearTimeout(qT); qT = setTimeout(() => {
   const q = $('q').value, box = $('qRes'); box.innerHTML = ''; const t = norm(q).split(' ').filter(Boolean); if (!t.length) return;
@@ -310,8 +366,12 @@ async function boot(){
     const b = await initBarcode();
     barcodeLoop();
     st((b ? 'Barcode ready' : 'Barcode unavailable') + ' · loading look-alike model…');
-    try { await loadEmb(); const dev = await initVisual(); st('Point at a box · barcode = exact, otherwise look-alike (' + dev + ')'); visualLoop(); }
-    catch(e) { st((b ? 'Barcode ready' : 'Barcode unavailable') + ' · look-alike failed: ' + e.message); }
+    try {
+      await loadEmb(); buildTextIndex();
+      initOCR().then(() => ocrLoop()).catch(() => {});
+      const dev = await initVisual();
+      st('Point at a box or figure · barcode = exact (' + dev + ')'); visualLoop();
+    } catch(e) { st((b ? 'Barcode ready' : 'Barcode unavailable') + ' · recognition failed: ' + e.message); }
   };
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) video.pause(); else if (!paused) video.play(); });
