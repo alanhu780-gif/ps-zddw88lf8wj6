@@ -64,7 +64,6 @@ small{color:var(--mut)}
       <div class="nm" id="cNm"></div>
       <div class="mt" id="cMt"></div>
       <div class="pr"><span class="cad" id="cCad"></span><span class="usd" id="cUsd"></span></div>
-      <div class="rd" id="cRead"></div>
     </div>
   </div>
   <div class="alts" id="cAlts"></div>
@@ -81,7 +80,7 @@ small{color:var(--mut)}
     <div style="display:flex;gap:8px;margin-top:8px"><input id="fxIn" type="number" step="0.0001" inputmode="decimal"><button class="ib" id="fxSave">Save</button><button class="ib" id="fxReset">Reset</button></div>
     <small id="fxNote" style="display:block;margin-top:6px"></small>
     <div style="margin-top:16px"><b>Look-alike sensitivity</b></div>
-    <div style="display:flex;gap:8px;margin-top:8px;align-items:center"><input id="thIn" type="range" min="0.70" max="0.92" step="0.01" style="flex:1"><span id="thV"></span></div>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center"><input id="thIn" type="range" min="4.5" max="9" step="0.1" style="flex:1"><span id="thV"></span></div>
     <small style="display:block;margin-top:6px">Lower shows guesses sooner; higher waits for a closer match. Barcode matches are always exact.</small>
     <small style="display:block;margin-top:16px">Values: your HobbyDB export (Aug 12, 2026), USD, converted at the rate above. Estimates, not sold comps.</small>
     <small id="dbg" style="display:block;margin-top:16px;opacity:.6"></small>
@@ -94,7 +93,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const ls = { get(k){ try { return localStorage.getItem(k) } catch(e){ return null } }, set(k,v){ try { localStorage.setItem(k,v) } catch(e){} }, del(k){ try { localStorage.removeItem(k) } catch(e){} } };
 let fx = parseFloat(ls.get('fx')) || FX_DEFAULT;
-let TH = parseFloat(ls.get('th2')) || 0.80;
+let TH = parseFloat(ls.get('th3')) || 6.0;
 const money = (v, c) => v == null ? '—' : (c === 'CAD' ? 'C$' : 'US$') + Math.round(v).toLocaleString('en-CA');
 const st = t => $('st').textContent = t;
 
@@ -134,14 +133,19 @@ async function thumb(id){
 }
 async function fillImg(el, id){ const s = await thumb(id); el.innerHTML = s ? '<img src="' + s + '">' : '<div class="no">No HobbyDB photo</div>'; }
 
-// embeddings: int8 normalized CLIP vectors; several reference photos/crops per item
-let E_IDS = [], E = null, D = 0, NREF = 0, RI = null;
+// recognition data: CLIP image vectors (several reference photos/crops per item) + CLIP text vectors of each item's name
+let E_IDS = [], E = null, D = 512, NREF = 0, RI = null, TE = null, HASIMG = null;
 async function loadEmb(){
-  const j = JSON.parse(await dec('d/clip.bin'));
-  E_IDS = j.ids.filter(id => BY_ID[id]); D = j.dim; NREF = j.nref;
-  const keep = new Map(j.ids.map((id,i) => [i, E_IDS.indexOf(id)]));
-  const ri = new Uint16Array(b64u(j.ri).buffer); RI = new Int32Array(NREF); for (let i = 0; i < NREF; i++) RI[i] = keep.get(ri[i]);
-  E = new Int8Array(b64u(j.q).buffer);
+  const [ji, jt] = await Promise.all([dec('d/clip.bin').then(JSON.parse), dec('d/text.bin').then(JSON.parse)]);
+  const tq = new Int8Array(b64u(jt.q).buffer);
+  const keepIdx = []; jt.ids.forEach((id, i) => { if (BY_ID[id]) keepIdx.push(i); });
+  E_IDS = keepIdx.map(i => jt.ids[i]);
+  TE = new Int8Array(E_IDS.length * D); keepIdx.forEach((src, k) => TE.set(tq.subarray(src*D, src*D + D), k*D));
+  const pos = new Map(E_IDS.map((id, k) => [id, k]));
+  NREF = ji.nref; E = new Int8Array(b64u(ji.q).buffer);
+  const ri = new Uint16Array(b64u(ji.ri).buffer); RI = new Int32Array(NREF);
+  HASIMG = new Uint8Array(E_IDS.length);
+  for (let i = 0; i < NREF; i++) { const k = pos.has(ji.ids[ri[i]]) ? pos.get(ji.ids[ri[i]]) : -1; RI[i] = k; if (k >= 0) HASIMG[k] = 1; }
 }
 // ---------- camera ----------
 const video = $('v');
@@ -206,51 +210,17 @@ async function embedFrame(){
   n = Math.sqrt(n); for (let j = 0; j < D; j++) q[j] /= n;
   return q;
 }
-// per-item visual score = best of that item's reference photos/crops
+// per-item score: photo match (best of the item's reference photos/crops) + name match (CLIP reading the box),
+// each standardised across the collection so they add on the same scale
+function zs(A, mask){ let n = 0, mu = 0; for (let k = 0; k < A.length; k++) if (!mask || mask[k]) { mu += A[k]; n++; } mu /= n; let sd = 0; for (let k = 0; k < A.length; k++) if (!mask || mask[k]) sd += (A[k]-mu)**2; sd = Math.sqrt(sd/n) || 1; return [mu, sd]; }
 function itemScores(q){
-  const S = new Float32Array(E_IDS.length).fill(-1);
-  for (let i = 0; i < NREF; i++) { let s = 0; const o = i*D; for (let j = 0; j < D; j++) s += q[j]*E[o+j]; s /= 127; const it = RI[i]; if (s > S[it]) S[it] = s; }
-  return S;
-}
-
-// ---------- box text (Tesseract, background) ----------
-const STOPW = new Set('the a an of and or with to in on for by pop pops funko vinyl figure figures exclusive edition limited pcs piece pieces collectible collectibles series vol box new rare chase special glow dark metallic flocked inch inches super sized deluxe not suitable children under years warning choking hazard small parts made china ages age www com'.split(' '));
-let IDF = {}, NAMETOK = [];
-function buildTextIndex(){
-  const df = {};
-  NAMETOK = E_IDS.map(id => { const it = BY_ID[id]; const t = new Set(norm([it.name, it.orig].join(' ')).split(' ').filter(w => w.length >= 3 && !STOPW.has(w) && !/^\d+$/.test(w))); t.forEach(w => df[w] = (df[w]||0) + 1); return t; });
-  const N = E_IDS.length; for (const w in df) IDF[w] = Math.log(1 + N / df[w]);
-}
-let ocrWorker = null, ocrBusy = false, OCR = {words:new Set(), nums:new Set(), at:0, raw:''};
-async function initOCR(){
-  const T = (await import('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.esm.min.js')).default;
-  ocrWorker = await T.createWorker('eng', 1, {workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js', corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1', langPath:'https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int'});
-  await ocrWorker.setParameters({tessedit_pageseg_mode:'11'});
-}
-const oc = document.createElement('canvas'), ocx = oc.getContext('2d', {willReadFrequently:true});
-async function readText(){
-  const r = retRect(); const W = Math.min(1400, Math.round(r.w * 1.6)); oc.width = W; oc.height = W;
-  ocx.filter = 'grayscale(1) contrast(1.35)'; ocx.drawImage(video, r.x, r.y, r.w, r.h, 0, 0, W, W); ocx.filter = 'none';
-  const res = await ocrWorker.recognize(oc);
-  const words = new Set(), nums = new Set(), shown = [];
-  for (const w of res.data.words) {
-    if (w.confidence < 55) continue;
-    const t = norm(w.text).replace(/#/g,'');
-    for (const p of t.split(' ')) {
-      if (/^\d{1,4}$/.test(p)) { nums.add(p.replace(/^0+(?=\d)/,'')); continue; }
-      if (p.length >= 3 && !STOPW.has(p) && IDF[p]) { words.add(p); shown.push(p); }
-    }
-  }
-  OCR = {words, nums, at: Date.now(), raw: [...new Set(shown)].slice(0,4).join(' ').toUpperCase()};
-}
-// text evidence per item: share of the item's name weight that was read on the box, plus box-number match
-function textBoost(k){
-  if (!OCR.words.size && !OCR.nums.size) return 0;
-  if (Date.now() - OCR.at > 5000) return 0;
-  let tot = 0, hit = 0; for (const w of NAMETOK[k]) { tot += IDF[w]; if (OCR.words.has(w)) hit += IDF[w]; }
-  let b = tot ? 0.07 * hit / tot : 0;
-  const it = BY_ID[E_IDS[k]]; if (it.refN && OCR.nums.has(it.refN) && hit > 0) b += 0.03;
-  return b;
+  const M = E_IDS.length, SI = new Float32Array(M).fill(-9), ST = new Float32Array(M);
+  for (let i = 0; i < NREF; i++) { const it = RI[i]; if (it < 0) continue; let s = 0; const o = i*D; for (let j = 0; j < D; j++) s += q[j]*E[o+j]; s /= 127; if (s > SI[it]) SI[it] = s; }
+  for (let k = 0; k < M; k++) { let s = 0; const o = k*D; for (let j = 0; j < D; j++) s += q[j]*TE[o+j]; ST[k] = s / 127; }
+  const [mi, si] = zs(SI, HASIMG), [mt, st2] = zs(ST);
+  const F = new Float32Array(M);
+  for (let k = 0; k < M; k++) F[k] = (HASIMG[k] ? (SI[k]-mi)/si : 0) + (ST[k]-mt)/st2;
+  return F;
 }
 
 // ---------- card ----------
@@ -270,7 +240,6 @@ function show(it, kind, alts){
     $('cLink').href = 'https://www.hobbydb.com/marketplaces/hobbydb/collectibles/' + it.id;
     fillImg($('cTh'), it.id);
   }
-  $('cRead').textContent = (kind === 'likely' || kind === 'unsure') && OCR.raw && Date.now() - OCR.at < 5000 ? 'Read on box: ' + OCR.raw : '';
   const box = $('cAlts');
   if (alts && alts.length > 1) {
     const key = alts.map(a => a.id).join(',');
@@ -304,8 +273,9 @@ async function barcodeLoop(){
     await new Promise(r => setTimeout(r, 120));
   }
 }
-let EMA = null, lastTop = null;
+let EMA = null;
 function resetEMA(){ EMA = null; }
+const MARGIN_LIKELY = 0.8, ALT_WINDOW = 1.5;
 async function visualLoop(){
   while (true) {
     if (vmodel && E && !paused && !pinned && video.readyState >= 2 && Date.now() - lastBarcodeAt > 2500) {
@@ -314,35 +284,28 @@ async function visualLoop(){
         const S = itemScores(await embedFrame());
         // smooth over frames so one blurry frame doesn't flip the answer
         if (!EMA) EMA = S; else for (let k = 0; k < S.length; k++) EMA[k] = 0.55*S[k] + 0.45*EMA[k];
-        const F = new Float32Array(EMA.length); for (let k = 0; k < F.length; k++) F[k] = EMA[k] + textBoost(k);
-        const order = Array.from(F.keys()).sort((a,b) => F[b] - F[a]).slice(0, 6);
-        const b0 = order[0], s0 = EMA[b0], margin = F[b0] - F[order[1]];
-        $('dbg').textContent = DEV + ' · ' + Math.round(performance.now() - t0) + ' ms · top ' + order.slice(0,3).map(k => F[k].toFixed(3)).join(' / ') + (OCR.raw ? ' · read: ' + OCR.raw : '');
-        if (s0 >= TH) {
-          const alts = order.filter(k => F[k] >= F[b0] - 0.06).slice(0, 5).map(k => BY_ID[E_IDS[k]]);
-          const kind = margin >= 0.03 ? 'likely' : 'unsure';
+        const order = Array.from(EMA.keys()).sort((a,b) => EMA[b] - EMA[a]).slice(0, 6);
+        const b0 = order[0], top = EMA[b0], margin = top - EMA[order[1]];
+        $('dbg').textContent = DEV + ' · ' + Math.round(performance.now() - t0) + ' ms · top ' + order.slice(0,3).map(k => EMA[k].toFixed(2)).join(' / ');
+        if (top >= TH) {
+          const kind = margin >= MARGIN_LIKELY ? 'likely' : 'unsure';
+          const alts = order.filter(k => EMA[k] >= top - ALT_WINDOW).slice(0, 5).map(k => BY_ID[E_IDS[k]]);
           if (navigator.vibrate && kind === 'likely' && (!shown || shown.id !== E_IDS[b0])) navigator.vibrate(25);
-          show(BY_ID[E_IDS[b0]], kind, kind === 'likely' && alts.length < 2 ? order.slice(0,4).map(k => BY_ID[E_IDS[k]]) : alts);
-        } else if (shownKind === 'likely' || shownKind === 'unsure') { if (s0 < TH - 0.04) { hide(); resetEMA(); } }
-      } catch(e){ $('dbg').textContent = 'visual error: ' + e.message; }
+          show(BY_ID[E_IDS[b0]], kind, alts.length >= 2 ? alts : order.slice(0,4).map(k => BY_ID[E_IDS[k]]));
+        } else if (shownKind === 'likely' || shownKind === 'unsure') { if (top < TH - 0.6) { hide(); resetEMA(); } }
+      } catch(e){ $('dbg').textContent = 'recognition error: ' + e.message; }
     }
     await new Promise(r => setTimeout(r, 30));
-  }
-}
-async function ocrLoop(){
-  while (true) {
-    if (ocrWorker && !paused && !pinned && video.readyState >= 2 && Date.now() - lastBarcodeAt > 2500) { try { await readText(); } catch(e){} }
-    await new Promise(r => setTimeout(r, 700));
   }
 }
 
 // ---------- panel ----------
 function openPanel(which){ $('panel').classList.add('on'); $('pSearch').style.display = which === 's' ? '' : 'none'; $('pSet').style.display = which === 'set' ? '' : 'none'; $('pTitle').textContent = which === 's' ? 'Search' : 'Settings'; if (which === 's') setTimeout(() => $('q').focus(), 50); }
 $('findB').onclick = () => openPanel('s'); $('setB').onclick = () => openPanel('set'); $('pClose').onclick = () => $('panel').classList.remove('on');
-function fxUI(){ $('fxIn').value = fx; $('fxNote').textContent = (fx === FX_DEFAULT ? 'Default: ' : 'Custom. Default ' + FX_DEFAULT + ', ') + FX_SOURCE; $('thIn').value = TH; $('thV').textContent = TH.toFixed(2); }
+function fxUI(){ $('fxIn').value = fx; $('fxNote').textContent = (fx === FX_DEFAULT ? 'Default: ' : 'Custom. Default ' + FX_DEFAULT + ', ') + FX_SOURCE; $('thIn').value = TH; $('thV').textContent = TH.toFixed(1); }
 $('fxSave').onclick = () => { const v = parseFloat($('fxIn').value); if (v > 0.5 && v < 3) { fx = v; ls.set('fx', v); fxUI(); if (shown) { const s = shown, k = shownKind; shown = null; show(s, k); } } };
 $('fxReset').onclick = () => { fx = FX_DEFAULT; ls.del('fx'); fxUI(); };
-$('thIn').oninput = () => { TH = parseFloat($('thIn').value); ls.set('th2', TH); fxUI(); };
+$('thIn').oninput = () => { TH = parseFloat($('thIn').value); ls.set('th3', TH); fxUI(); };
 let qT;
 $('q').oninput = () => { clearTimeout(qT); qT = setTimeout(() => {
   const q = $('q').value, box = $('qRes'); box.innerHTML = ''; const t = norm(q).split(' ').filter(Boolean); if (!t.length) return;
@@ -367,8 +330,7 @@ async function boot(){
     barcodeLoop();
     st((b ? 'Barcode ready' : 'Barcode unavailable') + ' · loading look-alike model…');
     try {
-      await loadEmb(); buildTextIndex();
-      initOCR().then(() => ocrLoop()).catch(() => {});
+      await loadEmb();
       const dev = await initVisual();
       st('Point at a box or figure · barcode = exact (' + dev + ')'); visualLoop();
     } catch(e) { st((b ? 'Barcode ready' : 'Barcode unavailable') + ' · recognition failed: ' + e.message); }
